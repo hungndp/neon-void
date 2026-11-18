@@ -20,6 +20,7 @@ const EFFECTS = {
   over: ['triangle', 330, 65, 0.7, 0.14],
   boss: ['sawtooth', 82, 37, 0.85, 0.2],
   bossDown: ['sine', 130, 24, 0.8, 0.34],
+  shield: ['square', 1250, 880, 0.05, 0.045],
 };
 
 // The score: a dark little loop in A minor at 96 BPM. A pulsing bass on sixteenth notes, a
@@ -42,6 +43,7 @@ export function createAudio() {
   let master = null;
   let noiseBuffer = null;
   let muted = false;
+  let bossMode = false;
   let lastPlayed = {};
   let musicTimer = null;
   let nextBarAt = 0;
@@ -94,15 +96,25 @@ export function createAudio() {
     source.stop(when + 0.07);
   }
 
-  /** Lay down one bar of the loop at the given time: bass, hats, and the bar's chord. */
+  /** Lay down one bar of the loop at the given time: bass, hats, and the bar's chord. While
+   *  the boss mode is raised, the same bar gains a fight layer: the bass doubles at the
+   *  octave on the off-eighths, the hats close up to a gallop, and a high spark of the
+   *  chord's root lands mid-bar — a boss fight sounds like one even with your eyes shut. */
   function scheduleBar(when) {
     const step = MUSIC.secondsPerBar / 16;
     for (let index = 0; index < 16; index += 1) {
       if (MUSIC.bass[index] > 0) musicTone('triangle', MUSIC.bass[index], when + index * step, step * 0.95, 0.055);
       if (index % 4 === 2) musicHat(when + index * step);
+      if (bossMode) {
+        if (index % 4 === 2) musicTone('triangle', MUSIC.bass[index - 2] * 2, when + index * step, step * 0.9, 0.028);
+        if (index % 2 === 0) musicHat(when + index * step);
+      }
     }
     for (const freq of MUSIC.chords[barCount % MUSIC.chords.length]) {
       musicTone('sine', freq, when, MUSIC.secondsPerBar * 0.98, 0.02);
+    }
+    if (bossMode) {
+      musicTone('sine', MUSIC.chords[barCount % MUSIC.chords.length][0] * 3, when + MUSIC.secondsPerBar * 0.5, MUSIC.secondsPerBar * 0.4, 0.011);
     }
     barCount += 1;
   }
@@ -171,6 +183,10 @@ export function createAudio() {
   return {
     unlock,
     play,
+    /** Raise or lower the score's fight layer; the shell calls it as the Warden comes and goes. */
+    setBossMode(on) {
+      bossMode = on;
+    },
     /** Flip the mute and return the new state. */
     toggleMute() {
       muted = !muted;

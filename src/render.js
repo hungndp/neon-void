@@ -3,7 +3,7 @@
 // silhouette and colour per enemy kind, the HUD, and the full-screen menus. It never changes
 // the game; the same state always paints the same frame.
 
-import { BOSS, COLORS, ENEMIES, FIELD, PLAYER } from './config.js';
+import { BOSS, COLORS, DRONE, ENEMIES, FIELD, PLAYER, SHIELD, biomeForWave } from './config.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -64,22 +64,21 @@ export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
 
   function drawBackground(state) {
-    ctx.fillStyle = COLORS.background;
+    // The wave's biome paints the room: its own darkness, its own nebula colours over the
+    // same three wash positions, so the sector keeps its geography while its temper turns.
+    const biome = biomeForWave(Math.max(1, state.wave));
+    ctx.fillStyle = biome.background;
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    // Two soft nebula washes, fixed in place, so the arena has a geography.
-    for (const [x, y, radius, color] of [
-      [300, 170, 340, 'rgba(64, 60, 180, 0.16)'],
-      [1010, 560, 380, 'rgba(14, 116, 144, 0.14)'],
-      [880, 120, 240, 'rgba(150, 40, 90, 0.10)'],
-    ]) {
+    const washSpots = [[300, 170, 340], [1010, 560, 380], [880, 120, 240]];
+    washSpots.forEach(([x, y, radius], index) => {
       const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
-      gradient.addColorStop(0, color);
+      gradient.addColorStop(0, biome.nebula[index]);
       gradient.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = gradient;
       ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-    }
+    });
     // Faint grid.
-    ctx.strokeStyle = COLORS.grid;
+    ctx.strokeStyle = biome.grid;
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let x = 80; x < FIELD.width; x += 80) {
@@ -100,8 +99,8 @@ export function createRenderer(canvas) {
       ctx.fillRect(star.x, star.y, size, size);
     }
     ctx.globalAlpha = 1;
-    // The arena wall.
-    ctx.strokeStyle = 'rgba(77, 243, 255, 0.35)';
+    // The arena wall, in the biome's accent.
+    ctx.strokeStyle = biome.wall;
     ctx.lineWidth = 2;
     ctx.strokeRect(1, 1, FIELD.width - 2, FIELD.height - 2);
   }
@@ -216,6 +215,72 @@ export function createRenderer(canvas) {
     ctx.shadowBlur = 0;
   }
 
+  /**
+   * The Bulwark, drawn in the enemy's own translated space: a heavy eight-sided slab with a
+   * darker plate riveted inside it, and — the whole point of the kind — its shield: a bright
+   * arc standing off the front that faces the ship. Where the arc is drawn, shots die; the
+   * picture says so at a glance, which is what makes the block fair.
+   */
+  function drawBulwarkBody(state, enemy) {
+    const r = enemy.radius;
+    ctx.save();
+    ctx.rotate(enemy.age * 0.25);
+    const slab = [];
+    for (let index = 0; index < 8; index += 1) {
+      const a = (index / 8) * Math.PI * 2 + Math.PI / 8;
+      slab.push([Math.cos(a) * r, Math.sin(a) * r]);
+    }
+    polygon(ctx, slab);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(7, 8, 18, 0.5)';
+    const plate = [];
+    for (let index = 0; index < 8; index += 1) {
+      const a = (index / 8) * Math.PI * 2 + Math.PI / 8;
+      plate.push([Math.cos(a) * r * 0.62, Math.sin(a) * r * 0.62]);
+    }
+    polygon(ctx, plate);
+    ctx.fill();
+    ctx.restore();
+    // Its eye, small and steady at the centre.
+    ctx.fillStyle = enemy.flash > 0 ? '#ffffff' : '#e8f6ff';
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+    // The shield arc itself, exactly as wide as the rules make it, on the facing the rules
+    // keep — so the picture never promises cover the simulation does not give.
+    const facing = enemy.facing ?? Math.atan2(state.player.y - enemy.y, state.player.x - enemy.x);
+    ctx.strokeStyle = 'rgba(213, 240, 255, 0.9)';
+    ctx.lineWidth = 4.5;
+    ctx.shadowColor = COLORS.bulwark;
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.arc(0, 0, r + 7, facing - SHIELD.halfArc, facing + SHIELD.halfArc);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  /** The orbital escorts: small bright darts riding their circle around the ship. */
+  function drawDrones(state) {
+    if (state.drones.length === 0) return;
+    ctx.strokeStyle = 'rgba(77, 243, 255, 0.16)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(state.player.x, state.player.y, DRONE.orbitRadius, 0, Math.PI * 2);
+    ctx.stroke();
+    for (const drone of state.drones) {
+      ctx.save();
+      ctx.translate(drone.x, drone.y);
+      ctx.rotate(drone.angle + Math.PI / 2);
+      ctx.shadowColor = COLORS.player;
+      ctx.shadowBlur = 9;
+      ctx.fillStyle = '#aef7ff';
+      polygon(ctx, [[0, -8], [5.5, 6], [0, 3], [-5.5, 6]]);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.shadowBlur = 0;
+  }
+
   function drawEnemy(state, enemy) {
     const spec = ENEMIES[enemy.kind];
     const color = enemy.flash > 0 ? '#ffffff' : COLORS[enemy.kind];
@@ -277,6 +342,8 @@ export function createRenderer(canvas) {
         ctx.arc(ox * r, oy * r, r * 0.3, 0, Math.PI * 2);
         ctx.fill();
       }
+    } else if (enemy.kind === 'bulwark') {
+      drawBulwarkBody(state, enemy);
     } else if (enemy.kind === 'warden') {
       drawWardenBody(state, enemy);
     }
@@ -308,9 +375,9 @@ export function createRenderer(canvas) {
     // Dash state under the hull.
     ctx.fillStyle = player.dashCooldownTimer <= 0 ? COLORS.player : COLORS.dimText;
     ctx.fillText(player.dashCooldownTimer <= 0 ? 'DASH READY (SHIFT)' : 'DASH CHARGING…', 18, 62);
-    // Wave, top centre.
+    // Wave and its biome, top centre: the ground's name travels with the number.
     if (state.wave > 0) {
-      centredText(ctx, `WAVE ${state.wave}${state.endless ? ' · ENDLESS' : ''}`, 34, 'bold 21px system-ui, sans-serif', COLORS.text);
+      centredText(ctx, `WAVE ${state.wave} · ${biomeForWave(state.wave).name}${state.endless ? ' · ENDLESS' : ''}`, 34, 'bold 21px system-ui, sans-serif', COLORS.text);
     }
     // The boss bar, under the wave: while the Warden lives, its name and hull own the top.
     const boss = state.enemies.find((enemy) => enemy.kind === 'warden');
@@ -377,7 +444,8 @@ export function createRenderer(canvas) {
       'SHIFT / right mouse — dash (you are untouchable mid-dash)',
       'Collect gold shards to level up and choose an upgrade.',
       'Chain kills to raise the combo multiplier. Do not get touched.',
-      'Five enemy kinds hunt you — and on waves 5 and 10, the WARDEN awaits.',
+      'Six kinds hunt you, one behind a shield — flank it or dash past it.',
+      'The sector changes temper as you deepen. On waves 5 and 10: the WARDEN.',
     ];
     lines.forEach((line, index) => ctx.fillText(line, FIELD.width / 2 - 282, panelTop + 42 + index * 32));
     centredText(ctx, 'CLICK OR PRESS ENTER TO LAUNCH', 592, 'bold 21px system-ui, sans-serif', '#ffe066');
@@ -470,6 +538,7 @@ export function createRenderer(canvas) {
     ctx.shadowBlur = 0;
     for (const enemy of state.enemies) drawEnemy(state, enemy);
     if (!state.over) drawShip(state);
+    drawDrones(state);
     // Player shots wear short light trails, so a stream of fire reads as a stream.
     ctx.strokeStyle = 'rgba(174, 247, 255, 0.45)';
     ctx.lineWidth = 2.5;

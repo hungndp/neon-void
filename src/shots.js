@@ -11,7 +11,7 @@ import { FIELD, STEP } from './config.js';
 import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE, SCREEN_UPGRADE } from './render.js';
 
 // Upgrade picks, best first: the pilot builds the way the cards suggest a player should.
-const UPGRADE_PRIORITY = ['split', 'damage', 'rate', 'plating', 'pierce', 'dash', 'magnet', 'speed'];
+const UPGRADE_PRIORITY = ['split', 'drone', 'damage', 'rate', 'plating', 'pierce', 'dash', 'magnet', 'speed'];
 
 function nearestEnemy(state) {
   let best = null;
@@ -191,12 +191,18 @@ export function stageShot(name, world) {
         if (Math.hypot(enemy.x - state.player.x, enemy.y - state.player.y) < 430) near += 1;
       }
       if (near < 4 || state.bullets.length < 3) continue;
-      const score = clusterScore(state);
+      let score = clusterScore(state);
+      // The newest things a run can show earn their place in the kept frame: a Bulwark's
+      // shield up, or an escort drone on its circle, says more than one more drifter.
+      if (state.enemies.some((enemy) => enemy.kind === 'bulwark')) score += 7;
+      if (state.drones.length > 0) score += 5;
+      // A battle reads best with the ship in the open, not pinned to a wall or the HUD.
+      if (state.player.x < 220 || state.player.x > FIELD.width - 220 || state.player.y < 150 || state.player.y > FIELD.height - 130) score -= 12;
       if (score > bestScore) {
         bestScore = score;
         bestText = snapshot(state);
       }
-      if (bestScore >= 46) break;
+      if (bestScore >= 60) break;
     }
     if (bestText !== null) restore(state, bestText);
     return { screen: SCREEN_PLAY, best: state.score };

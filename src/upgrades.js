@@ -43,6 +43,15 @@ export const UPGRADES = [
     },
   },
   {
+    id: 'drone',
+    name: 'Orbital Drone',
+    blurb: 'A drone orbits you, firing on its own',
+    max: 3,
+    apply(stats) {
+      stats.drones += 1;
+    },
+  },
+  {
     id: 'speed',
     name: 'Swift Hull',
     blurb: '+12% move speed',

@@ -4,11 +4,12 @@
 // the shell can answer them with sound and shake. Rendering reads the state; it never changes
 // it. All chance comes from the seeded random handed in at creation.
 
-import { BOSS, COLORS, COMBO, ENEMIES, FIELD, PLAYER, WAVES, xpForLevel } from './config.js';
+import { BOSS, COLORS, COMBO, DRONE, ENEMIES, FIELD, PLAYER, SHIELD, WAVES, biomeForWave, xpForLevel } from './config.js';
 import { rollChoices, upgradeById } from './upgrades.js';
 
 export const EVENT_SHOOT = 'shoot';
 export const EVENT_ENEMY_SHOOT = 'enemyShoot';
+export const EVENT_SHIELD = 'shield';
 export const EVENT_EXPLODE = 'explode';
 export const EVENT_SPLIT = 'split';
 export const EVENT_PICKUP = 'pickup';
@@ -34,6 +35,7 @@ function freshStats() {
     magnetScale: 1,
     projectiles: 1,
     pierce: 0,
+    drones: 0,
   };
 }
 
@@ -67,6 +69,8 @@ export function createWorld(random) {
     shards: [],
     particles: [],
     floaters: [],
+    drones: [], // the orbital escorts' positions this step, kept as plain data for the renderer
+    droneTimers: [], // one fire timer per escort, grown to match the ship's fittings
   };
 
   function freshPlayer() {
@@ -118,6 +122,8 @@ export function createWorld(random) {
     state.shards = [];
     state.particles = [];
     state.floaters = [];
+    state.drones = [];
+    state.droneTimers = [];
   }
 
   // ---- effects the renderer draws but the rules only spawn -------------------------------
@@ -162,6 +168,10 @@ export function createWorld(random) {
       spawnWarden();
       floater(FIELD.width / 2, 196, `${BOSS.name} AWAKENS`, COLORS.warden, 24);
       events.push(EVENT_BOSS);
+    } else {
+      // The ground itself is named as it turns: the banner tells the player the sector has
+      // changed temper before the first hunter of the new biome arrives.
+      floater(FIELD.width / 2, 196, `— ${biomeForWave(state.wave).name} —`, '#8fa3c8', 19);
     }
   }
 
@@ -202,7 +212,11 @@ export function createWorld(random) {
   }
 
   function spawnEnemy() {
-    const kinds = spawnableKinds().filter((kind) => ENEMIES[kind].cost <= state.spawnBudget);
+    let kinds = spawnableKinds().filter((kind) => ENEMIES[kind].cost <= state.spawnBudget);
+    // Bulwarks rationed: one living wall at a time until the deep waves, two after — a wave
+    // is a fight against a shield plus a swarm, never a corridor of shields.
+    const liveBulwarks = state.enemies.filter((enemy) => enemy.kind === 'bulwark').length;
+    if (liveBulwarks >= (state.wave >= 8 ? 2 : 1)) kinds = kinds.filter((kind) => kind !== 'bulwark');
     if (kinds.length === 0) {
       state.spawnBudget = 0;
       return;
@@ -219,7 +233,8 @@ export function createWorld(random) {
       y = side === 2 ? 30 : side === 3 ? FIELD.height - 30 : random.range(30, FIELD.height - 30);
       if (distance(x, y, state.player.x, state.player.y) > 280) break;
     }
-    const elite = state.wave >= WAVES.eliteFromWave && random.chance(WAVES.eliteChance);
+    // No elite Bulwarks: a gilded shield-wall would be a sponge, not a fight.
+    const elite = kind !== 'bulwark' && state.wave >= WAVES.eliteFromWave && random.chance(WAVES.eliteChance);
     const hpScale = (1 + (state.wave - 1) * 0.12) * (elite ? WAVES.eliteHpScale : 1);
     state.enemies.push({
       kind,
@@ -237,6 +252,7 @@ export function createWorld(random) {
       modeTimer: random.range(0.7, 1.3),
       fireTimer: random.range(1.2, 2.4),
       orbit: random.chance(0.5) ? 1 : -1,
+      facing: Math.atan2(state.player.y - y, state.player.x - x),
     });
   }
 
@@ -356,6 +372,20 @@ export function createWorld(random) {
   }
 
   // ---- combat ---------------------------------------------------------------------------
+
+  /**
+   * Whether the Bulwark's shield stops a hit arriving from (fromX, fromY). The shield covers
+   * the arc the Bulwark faces, and its facing turns toward the ship only at the rate in its
+   * step — a heavy shield on a heavy frame — so a hit inside the arc is turned aside whole,
+   * while a ship that keeps strafing, or dashes clean through it, strikes where the shield
+   * has not yet swung to cover. From the flank or the rear there is no shield at all.
+   */
+  function shieldBlocks(enemy, fromX, fromY) {
+    const arrival = Math.atan2(fromY - enemy.y, fromX - enemy.x);
+    let gap = Math.abs(arrival - enemy.facing) % (Math.PI * 2);
+    if (gap > Math.PI) gap = Math.PI * 2 - gap;
+    return gap < SHIELD.halfArc;
+  }
 
   function damagePlayer(amount, events) {
     const player = state.player;
@@ -551,6 +581,50 @@ export function createWorld(random) {
     player.x = Math.min(FIELD.width - player.radius, Math.max(player.radius, player.x + player.vx * dt));
     player.y = Math.min(FIELD.height - player.radius, Math.max(player.radius, player.y + player.vy * dt));
 
+    // Orbital drones: each escort circles the ship and fires on the nearest hunter in reach,
+    // on its own timer. Their positions are kept on the state as plain data — the renderer
+    // draws exactly what the rules placed, and a screenshot snapshot carries them whole.
+    const droneCount = player.stats.drones;
+    while (state.droneTimers.length < droneCount) state.droneTimers.push(random.range(0, DRONE.fireInterval));
+    state.droneTimers.length = droneCount;
+    state.drones = [];
+    for (let index = 0; index < droneCount; index += 1) {
+      const angle = state.time * DRONE.orbitSpeed + (index / droneCount) * Math.PI * 2;
+      const drone = {
+        x: player.x + Math.cos(angle) * DRONE.orbitRadius,
+        y: player.y + Math.sin(angle) * DRONE.orbitRadius,
+        angle,
+      };
+      state.drones.push(drone);
+      state.droneTimers[index] -= dt;
+      if (state.droneTimers[index] > 0 || state.phase !== 'combat') continue;
+      let target = null;
+      let bestGap = DRONE.range;
+      for (const enemy of state.enemies) {
+        const gap = distance(drone.x, drone.y, enemy.x, enemy.y);
+        if (gap < bestGap) {
+          bestGap = gap;
+          target = enemy;
+        }
+      }
+      if (target === null) {
+        state.droneTimers[index] = 0.12; // nothing in reach: look again in a blink
+        continue;
+      }
+      state.droneTimers[index] = DRONE.fireInterval;
+      const aim = Math.atan2(target.y - drone.y, target.x - drone.x);
+      state.bullets.push({
+        x: drone.x,
+        y: drone.y,
+        vx: Math.cos(aim) * DRONE.bulletSpeed,
+        vy: Math.sin(aim) * DRONE.bulletSpeed,
+        damage: DRONE.bulletDamage * player.stats.damageScale,
+        pierce: 0,
+        life: 0.8,
+      });
+      events.push(EVENT_SHOOT);
+    }
+
     // Firing: a fan of projectiles around the aim, one extra per Split Cannon.
     if (control.firing && player.fireTimer <= 0 && state.phase === 'combat') {
       player.fireTimer = PLAYER.fireInterval / player.stats.rateScale;
@@ -592,6 +666,14 @@ export function createWorld(random) {
       for (const enemy of state.enemies) {
         if (enemy.hp <= 0) continue;
         if (distance(bullet.x, bullet.y, enemy.x, enemy.y) > enemy.radius + PLAYER.bulletRadius) continue;
+        if (enemy.kind === 'bulwark' && shieldBlocks(enemy, bullet.x, bullet.y)) {
+          // Stopped cold on the shield: a fan of sparks, no wound, and the shot is spent
+          // however piercing it was — the shield is the one thing Lance Rounds cannot cross.
+          burst(bullet.x, bullet.y, '#a5d8ff', 4, 170, 2.2, 0.22);
+          events.push(EVENT_SHIELD);
+          bullet.life = 0;
+          break;
+        }
         enemy.hp -= bullet.damage;
         enemy.flash = 0.09;
         burst(bullet.x, bullet.y, '#aef7ff', 3, 150, 2.2, 0.25);
@@ -617,6 +699,18 @@ export function createWorld(random) {
         const wobble = Math.sin(enemy.age * 3.1) * 0.35;
         enemy.vx = Math.cos(toPlayer + wobble) * spec.speed * speedScale;
         enemy.vy = Math.sin(toPlayer + wobble) * spec.speed * speedScale;
+      } else if (enemy.kind === 'bulwark') {
+        // The slow wall: barely a wobble, never a hurry, always coming. Its facing — and so
+        // its shield — swings toward the ship at a limited rate: keep moving and the arc
+        // lags behind you, which is the opening the whole kind is built around.
+        const wobble = Math.sin(enemy.age * 1.4) * 0.12;
+        enemy.vx = Math.cos(toPlayer + wobble) * spec.speed * speedScale;
+        enemy.vy = Math.sin(toPlayer + wobble) * spec.speed * speedScale;
+        let turn = toPlayer - enemy.facing;
+        while (turn > Math.PI) turn -= Math.PI * 2;
+        while (turn < -Math.PI) turn += Math.PI * 2;
+        const maxTurn = SHIELD.turnRate * dt;
+        enemy.facing += Math.max(-maxTurn, Math.min(maxTurn, turn));
       } else if (enemy.kind === 'darter') {
         enemy.modeTimer -= dt;
         if (enemy.mode === 'stalk') {
@@ -677,9 +771,16 @@ export function createWorld(random) {
         if (player.dashTimer > 0) {
           if (enemy.dashHitTimer <= 0) {
             enemy.dashHitTimer = 0.3;
-            enemy.hp -= 34;
-            enemy.flash = 0.09;
-            if (enemy.hp <= 0) killEnemy(enemy, events);
+            if (enemy.kind === 'bulwark' && shieldBlocks(enemy, player.x, player.y)) {
+              // A dash into the shield's face is a dash wasted: sparks, and the lesson —
+              // the same dash through its flank tears the usual wound.
+              burst(player.x, player.y, '#a5d8ff', 8, 200, 2.6, 0.25);
+              events.push(EVENT_SHIELD);
+            } else {
+              enemy.hp -= 34;
+              enemy.flash = 0.09;
+              if (enemy.hp <= 0) killEnemy(enemy, events);
+            }
           }
         } else if (player.invulnTimer <= 0) {
           damagePlayer(spec.damage, events);

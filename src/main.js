@@ -10,7 +10,7 @@
 import { BEST_KEY, FIELD, STEP } from './config.js';
 import { createRandom } from './random.js';
 import { createAudio } from './audio.js';
-import { createWorld, EVENT_BOSS, EVENT_BOSS_DOWN, EVENT_DASH, EVENT_ENEMY_SHOOT, EVENT_EXPLODE, EVENT_HURT, EVENT_LEVELUP, EVENT_OVER, EVENT_PICKUP, EVENT_SHOOT, EVENT_SPLIT, EVENT_WAVE, EVENT_WIN } from './world.js';
+import { createWorld, EVENT_BOSS, EVENT_BOSS_DOWN, EVENT_DASH, EVENT_ENEMY_SHOOT, EVENT_EXPLODE, EVENT_HURT, EVENT_LEVELUP, EVENT_OVER, EVENT_PICKUP, EVENT_SHIELD, EVENT_SHOOT, EVENT_SPLIT, EVENT_WAVE, EVENT_WIN } from './world.js';
 import { ACTION_CONFIRM, ACTION_CONTINUE, ACTION_MUTE, ACTION_PAUSE, ACTION_RESTART, createInput } from './input.js';
 import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE, SCREEN_UPGRADE, SCREEN_WIN, upgradeCardRects } from './render.js';
 import { stageShot } from './shots.js';
@@ -106,6 +106,7 @@ function runGame() {
         audio.play('explode');
         shake = Math.max(shake, 12);
       } else if (event === EVENT_SPLIT) audio.play('split');
+      else if (event === EVENT_SHIELD) audio.play('shield');
       else if (event === EVENT_PICKUP) audio.play('pickup');
       else if (event === EVENT_LEVELUP) audio.play('levelup');
       else if (event === EVENT_DASH) audio.play('dash');
@@ -237,6 +238,8 @@ function runGame() {
     }
     shake *= 0.86;
     hurtFlash *= 0.88;
+    // The score follows the fight: while a Warden lives, the music carries its fight layer.
+    audio.setBossMode(world.state.enemies.some((enemy) => enemy.kind === 'warden'));
     renderer.draw(world.state, { screen, best, muted: audio.muted, shake, hurtFlash });
     statusClock += elapsed;
     if (statusClock > 0.5) {
